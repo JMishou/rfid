@@ -19,43 +19,13 @@ serialport.on('open', function() {
                 rfidstring = rfidstring.concat(String.fromCharCode(value));
             });
             testrfid = rfidstring.join("");
-
-            console.log(parseInt("0x" + testrfid.slice(4,10)));
-
-/*
-            if (dataState == DATA_STATE_UNLOADED) {
-                blink(3);
-                return;
-            }
-            var accessGroup = lookupRFID(testrfid)
-            if (accessGroup == -1) {
-                logfail(testrfid, UNKNOWN_RFID_FMSG);
-                return;
-            }
-            switch (accessVars.accessMode) {
-                case 4:
-                    logfail(testrfid,  LOCKED_FMSG)
-                    break;
-                case 3:
-                    break;
-                case 2:
-                    if (accessGroup == ADMIN_GROUP) activate(testrfid, accessGroup, ADMIN_ONLY_SMSG);
-                    else logfail(testrfid, ADMIN_ONLY_FMSG)
-                    break;
-                case 1:
-                    activate(testrfid, accessGroup, ANY_ONLY_SMSG);
-                    break;
-                case 0:
-                    if (verifySchedule(accessGroup)) activate(testrfid, accessGroup, NORMAL_SMSG);
-                    else logfail(testrfid, NORMAL_FMSG);
-                    break;
-
-                default:
-
-            }
-*/
+            testrfid = pad(parseInt("0x" + testrfid.slice(4,10)),10));  
+            console.log(testrfid);
         }
     });
 });
 
-
+function pad(num, size) {
+    var s = "000000000" + num;
+    return s.substr(s.length-size);
+}
