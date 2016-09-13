@@ -29,6 +29,7 @@ while True:
             ID = ID + str(Zeichen)
         # Remove endflag from string
         ID = ID.replace(Endflag, "" )
+	print ID
         # Calc checksum
         for I in range(0, 9, 2):
             Checksumme = Checksumme ^ (((int(ID[I], 16)) << 4) + int(ID[I+1], 16))
