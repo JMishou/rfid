@@ -6,10 +6,8 @@ serialport.on('open', function() {
     console.log('Serial Port Opened');
     serialport.on('data', function(data) {
         Array.prototype.push.apply(serdata, data);
-	console.log(serdata);
         if (serdata.slice(serdata.indexOf(0x02), serdata.length).length >= 14) {
             testrfid = serdata.slice(serdata.indexOf(0x02) + 1, serdata.indexOf(0x02) + 13);
-            console.log(String.fromCharCode(testrfid));
             serdata = [];
             var currRFIDTime = (new Date).getTime();
             if ((currRFIDTime - lastRFIDTime) < 2000) return;
@@ -22,9 +20,6 @@ serialport.on('open', function() {
             });
             testrfid = rfidstring.join("");
 
-            console.log(testrfid);
-
-            console.log(testrfid.slice(4,10));
             console.log(parseInt("0x" + testrfid.slice(4,10)));
 
 /*
