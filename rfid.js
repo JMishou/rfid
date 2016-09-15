@@ -23,7 +23,7 @@ serialport.on('open', function() {
                 rfidstring = rfidstring.concat(String.fromCharCode(value));
             });
             testrfid = rfidstring.join("");
-            testrfid = pad(parseInt("0x" + testrfid.slice(4,10)),10));  
+            testrfid = pad(parseInt("0x" + testrfid.slice(4,10)),10);  
             console.log(testrfid);
 	    console.log(lookupRFID(testrfid));
         }
