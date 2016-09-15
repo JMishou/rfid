@@ -3,6 +3,7 @@ var serdata = [];
 var SerialPort = require("serialport");
 var serialport = new SerialPort("/dev/ttyAMA0", 9600);
 var lastRFIDTime = 0;
+var fs = require('fs');
 
 
 loadRFID();
