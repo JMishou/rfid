@@ -1,57 +1,95 @@
+//Libraries
+
 var http = require("http");
 var https = require("https");
 var os = require("os");
 var querystring = require("querystring");
 var hostname = os.hostname();
+var rpio = require('rpio');
 
+
+//Global variables
+
+const ADMIN_GROUP = "99999";
+const UNKNOWN_RFID_FMSG = "RFID number not known.";
+const LOCKED_FMSG = "Access Control Unit Locked";
+const ADMIN_ONLY_SMSG = "Access Control Admin Only Mode Accepted";
+const ADMIN_ONLY_FMSG = "Admin Only Mode";
+const ANY_ONLY_SMSG = "Any User Mode";
+const NORMAL_SMSG = "Normal User Mode";
+const NORMAL_FMSG = "Normal Mode User Schedule Invalid";
+const DATA_STATE_UNLOADED = 0;
+const DATA_STATE_LOADED = 1;
+var dataState = 0;
 
 
 var RFIDData;
 var userID;
-var userLevel;
+var accessGroup;
 var SerialPort = require("serialport");
-var serialport = new SerialPort("/dev/ttyAMA0", 9600);
+//var ReadLine = SerialPort.parsers.ReadLine;
+var serialport = new SerialPort('/dev/serial0', {
+  parser: SerialPort.parsers.byteDelimiter([03])
+});
+//var parser = serialport.pipe(new ReadLine());
+
 var lastRFIDTime = 0;
+var RFIDLoadInterval;
 var fs = require('fs');
 var url = 'https://txrxlabs.org/rfid_access.json?door_id=1&api_key=hJVhmzCjYbXDV9Y6rjCRRrzWfERcyF';
 var doorid = 1;
 var serdata = [];
 
 
-loadRFIDServer();
+//Main code
+setupGPIO();
+loadRFIDServer(); // load rfid data
 
-serialport.on('open', function() {
-    console.log('Serial Port Opened');
-    serialport.on('data', function(data) {
+serialport.on('open', function() { // open serial port
+    console.log('Serial Port Opened'); 
+    serialport.on('data', function(data) { // on get data
+        Array.prototype.push.apply(serdata, data); // push the serial data to an array
 
-        Array.prototype.push.apply(serdata, data);
-        if (serdata.slice(serdata.indexOf(0x02), serdata.length).length >= 14) {
-		var currRFIDTime = (new Date).getTime();
-		if ((currRFIDTime - lastRFIDTime) <500) return;
-		lastRFIDTime = currRFIDTime;
-            	userID = rfidValue(serdata);
-	    	serdata = [];
-		userLevel = lookupUserLevel(userID);
-	    	console.log("User ID: " + userID + " User Level:" + userLevel);
+    if (serdata.slice(serdata.indexOf(0x02), serdata.length).length >= 14) { // if the array is now 14 characters long
+		    userID = rfidValue(serdata);
+	    	serdata = [];		
+		    var currRFIDTime = (new Date).getTime();
+		    if ((currRFIDTime - lastRFIDTime) < 2000){
+			      lastRFIDTime = currRFIDTime;
+			      return;
+		    }
+		    lastRFIDTime = currRFIDTime;	
+		    userAction(userID);
+        serialport.flush(function(err,results){});	
         }
     });
 });
 
 
+//Functions
+
+//setup gpio here
+function setupGPIO(){
+	rpio.open(11, rpio.OUTPUT, rpio.LOW);
+}
+
+//front pads a number with zeros to a specific length
 function pad(num, size) {
     var s = "000000000" + num;
     return s.substr(s.length-size);
 }
 
+//Saves rfid table to a local file
 function saveRFIDState() {
-    fs.writeFile('/tmp/accessRFID.json', JSON.stringify(RFIDData));
+    fs.writeFile('./accessRFID.json', JSON.stringify(RFIDData));
     console.log("RFID Data Saved to File.");
 }
 
-function loadRFID() {
-    fs.readFile('accessRFID.json', function(err, data) {
+//Loads rfid data from a local file
+function loadRFIDLocal() {
+    fs.readFile('./accessRFID.json', function(err, data) {
         if (err) {
-            console.log('No RFID File Found contacting server…');
+            console.log('No RFID File Found contacting server');
             RFIDLoadInterval = setInterval(loadRFIDServer, 30000);
             return;
         }
@@ -61,6 +99,9 @@ function loadRFID() {
     });
 }
 
+//Loads rfid data from the server
+//if successful the data is written locally
+//otherwise loads data from the local file.
 function loadRFIDServer() {
     https.get(url, function(res) {
         var body = '';
@@ -72,11 +113,12 @@ function loadRFIDServer() {
         res.on('end', function() {
             RFIDData = JSON.parse(body);
             console.log("Recieved RFID Data from Server.");
-            //saveRFIDState();
+            saveRFIDState();
             dataState = 1;
         });
     }).on('error', function(e) {
         console.log("Error Retrieving RFID Data from Server: ", e);
+	      loadRFIDLocal();
         return;
     });
 
@@ -84,8 +126,9 @@ function loadRFIDServer() {
     console.log('Completed Loading RFID Data From Server');
 }
 
-function lookupUserLevel(userID) {
-    //var num = "0008369167"
+
+//Looks up a user group level based on the userID
+function lookupaccessGroup(userID) {
     var keys = [];
     for (var key in RFIDData["rfids"]) {
         if (RFIDData["rfids"].hasOwnProperty(key)) {
@@ -95,7 +138,7 @@ function lookupUserLevel(userID) {
     return -1;
 }
 
-
+//takes the raw serial rfid data and converts it to a user ID
 function rfidValue(rawRFID) {
     //console.log(rawRFID);
 
@@ -109,4 +152,66 @@ function rfidValue(rawRFID) {
     rfid = rfidstring.join("");
     rfid = pad(parseInt("0x" + rfid.slice(4,10)),10);  
     return rfid
+}
+
+//Check user group level access vs the current schedule
+function verifySchedule(accessGroup) {
+    var now = new Date();
+    var day = now.getDay();
+    var time = (now.getHours()*100)+now.getMinutes();
+    console.log("Holiday = " + isHoliday(accessGroup));
+    if (accessGroup == ADMIN_GROUP) return true;
+    
+    var sched = RFIDData["schedule"][accessGroup];
+    if (typeof sched == 'undefined') return false;
+    for (var key in sched) {
+        if (sched.hasOwnProperty(key) && key==day) {
+            if (sched[key][0]<=time && sched[key][1] >= time)  {
+              return true;
+            }
+        }
+    }
+    return false;
+}
+
+
+// returns true if it is a holiday and the user group is excluded
+function isHoliday(accessGroup){
+    var now = new Date("2016", "11", "25").toJSON();
+    var holidays = RFIDData["holidays"];
+    
+    now = now.slice(0,10);
+
+    if (typeof holidays == 'undefined') return false;
+    for (var key in holidays) {
+        if (holidays.hasOwnProperty(key) && key==now) {
+            if (holidays[key][0] == accessGroup) {
+              return false;
+            }
+            else{
+              return true;
+            }
+        }
+    }
+    return false;
+} 
+
+//Triggers the user action based on proper permissions
+function userAction(userID){
+	accessGroup = lookupaccessGroup(userID);
+  if (verifySchedule(accessGroup) && !isHoliday(accessGroup)){
+	    console.log("Access Granted - UserID: " + userID + " Access Group: " + accessGroup);
+	    // Trigger relay for 2 second
+      rpio.write(11, rpio.HIGH);
+      rpio.sleep(2);
+      rpio.write(11, rpio.LOW);
+	}
+  else {
+    console.log("Access Denied - UserID: " + userID + " Access Group: " + accessGroup);
+  }
+}
+
+//log user and date/time for each attempt with result
+function logAttempts(message){
+
 }
