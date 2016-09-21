@@ -52,21 +52,47 @@ serialport.on('open', function() { // open serial port
 
     if (serdata.slice(serdata.indexOf(0x02), serdata.length).length >= 14) { // if the array is now 14 characters long
 		    userID = rfidValue(serdata);
-	    	serdata = [];		
+	    	serdata = [];
+        serialport.flush(function(err,results){});	
 		    var currRFIDTime = (new Date).getTime();
 		    if ((currRFIDTime - lastRFIDTime) < 2000){
-			      lastRFIDTime = currRFIDTime;
+			      lastRFIDTime = currRFIDTime;	
 			      return;
 		    }
 		    lastRFIDTime = currRFIDTime;	
 		    userAction(userID);
-        serialport.flush(function(err,results){});	
         }
     });
 });
 
-
 //Functions
+
+//takes the raw serial rfid data and converts it to a user ID
+function rfidValue(rawRFID) {
+    //console.log(rawRFID);
+    var rfid = rawRFID.slice(rawRFID.indexOf(0x02) + 1, rawRFID.indexOf(0x02) + 13);
+    var cardID = 0;
+    var chxm = 0;
+    var rfidstring = [];
+
+    rfid.forEach(function(value) {
+        rfidstring = rfidstring.concat(String.fromCharCode(value));
+    });
+    
+    for (i = 0; i < rfidstring.length-2; i+=2) {
+        chxm = chxm ^ parseInt("0x" + rfidstring.slice(i,i+2).join(""));
+    }
+    //console.log(parseInt(chxm,16));
+    rfid = rfidstring.join("");
+    cardID = pad(parseInt("0x" + rfid.slice(4,10)),10); 
+    if (chxm == parseInt("0x" + rfid.slice(10,13))){
+        return cardID
+    }
+    else{
+        logData("Invalid Checksum");
+    }
+}
+
 
 //setup gpio here
 function setupGPIO(){
@@ -138,28 +164,13 @@ function lookupaccessGroup(userID) {
     return -1;
 }
 
-//takes the raw serial rfid data and converts it to a user ID
-function rfidValue(rawRFID) {
-    //console.log(rawRFID);
 
-    var rfid = rawRFID.slice(rawRFID.indexOf(0x02) + 1, rawRFID.indexOf(0x02) + 13);
-
-    var rfidstring = [];
-
-    rfid.forEach(function(value) {
-        rfidstring = rfidstring.concat(String.fromCharCode(value));
-    });
-    rfid = rfidstring.join("");
-    rfid = pad(parseInt("0x" + rfid.slice(4,10)),10);  
-    return rfid
-}
 
 //Check user group level access vs the current schedule
 function verifySchedule(accessGroup) {
     var now = new Date();
     var day = now.getDay();
     var time = (now.getHours()*100)+now.getMinutes();
-    console.log("Holiday = " + isHoliday(accessGroup));
     if (accessGroup == ADMIN_GROUP) return true;
     
     var sched = RFIDData["schedule"][accessGroup];
@@ -200,18 +211,23 @@ function isHoliday(accessGroup){
 function userAction(userID){
 	accessGroup = lookupaccessGroup(userID);
   if (verifySchedule(accessGroup) && !isHoliday(accessGroup)){
-	    console.log("Access Granted - UserID: " + userID + " Access Group: " + accessGroup);
+	    logData("Access Granted - UserID: " + userID + " Access Group: " + accessGroup);
 	    // Trigger relay for 2 second
-      rpio.write(11, rpio.HIGH);
-      rpio.sleep(2);
-      rpio.write(11, rpio.LOW);
+      triggerRelay(2);
 	}
   else {
-    console.log("Access Denied - UserID: " + userID + " Access Group: " + accessGroup);
+    logData("Access Denied - UserID: " + userID + " Access Group: " + accessGroup);
   }
 }
 
 //log user and date/time for each attempt with result
-function logAttempts(message){
+function logData(message){
+    console.log(message);
+}
 
+function triggerRelay(onTime){
+      console.log("Trigger Relay: " + onTime);
+      rpio.write(11, rpio.HIGH);
+      rpio.sleep(onTime);
+      rpio.write(11, rpio.LOW);
 }
