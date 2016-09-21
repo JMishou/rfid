@@ -53,7 +53,7 @@ serialport.on('open', function() { // open serial port
     if (serdata.slice(serdata.indexOf(0x02), serdata.length).length >= 14) { // if the array is now 14 characters long
 		    userID = rfidValue(serdata);
 	    	serdata = [];
-        serialport.flush(function(err,results){});	
+        
 		    var currRFIDTime = (new Date).getTime();
 		    if ((currRFIDTime - lastRFIDTime) < 2000){
 			      lastRFIDTime = currRFIDTime;	
@@ -61,6 +61,7 @@ serialport.on('open', function() { // open serial port
 		    }
 		    lastRFIDTime = currRFIDTime;	
 		    userAction(userID);
+        serialport.flush(function(err,results){});	
         }
     });
 });
