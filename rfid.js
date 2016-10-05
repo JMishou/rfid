@@ -25,7 +25,11 @@ const DATA_STATE_UNLOADED = 0;
 const DATA_STATE_LOADED = 1;
 const CONFIG_FILE = "./config.json";
 const LOCAL_PERMISSION_FILE = "./accessRFID.json";
+const LOCAL_STATE_FILE = "./state.json"
 const LOCAL_LOG_FILE = "./log";
+
+const RELAY_PIN = 16;
+const BUZZER_PIN = 11;
 
 var dataState = 0;
 
@@ -36,6 +40,7 @@ var accessVars = {
 
 
 var RFIDData;
+var machineState = "{accessMode:'0'}";
 var userID;
 var accessGroup;
 
@@ -61,27 +66,29 @@ var serdata = [];
 
 
 //Main code
-loadConfig(configsLoaded); //Figure out asynchonous calls for loading files.
-setupGPIO();
+
+loadState();
+loadConfig(configsLoaded); //load configurations and then run configsLoaded()
+setupGPIO();  //setup the GPIO pins
 //setTimeout(loadRFIDServer(),0); // load rfid data
 
 serialport.on('open', function() { // open serial port
-    console.log('Serial Port Opened'); 
+    console.log('Serial Port Opened');
     serialport.on('data', function(data) { // on get data
         Array.prototype.push.apply(serdata, data); // push the serial data to an array
 
     if (serdata.slice(serdata.indexOf(0x02), serdata.length).length >= 14) { // if the array is now 14 characters long
 		    userID = rfidValue(serdata);
 	    	serdata = [];
-        
+
 		    var currRFIDTime = (new Date).getTime();
 		    if ((currRFIDTime - lastRFIDTime) < 2000){
-			      lastRFIDTime = currRFIDTime;	
+			      lastRFIDTime = currRFIDTime;
 			      return;
 		    }
-		    lastRFIDTime = currRFIDTime;	
+		    lastRFIDTime = currRFIDTime;
 		    userAction(userID);
-        serialport.flush(function(err,results){});	
+        serialport.flush(function(err,results){});
         }
     });
 });
@@ -91,60 +98,46 @@ serialport.on('open', function() { // open serial port
 function configsLoaded(data){
     if (data != null){
       configs = data["config"];
-      console.log(configs["config"]); 
+      console.log(configs["config"]);
       console.log("Configs Loaded");
       loadRFIDServer();
     }
 }
 
 function loadConfig(callback){
-    console.log(CONFIG_FILE);
     readJSON(CONFIG_FILE, callback);
- 
-/*    
-    fs.access(CONFIG_FILE, fs.F_OK, function(err) {
-    if (!err) {
-        console.log("File exists");
-        fs.readFile(CONFIG_FILE, function(err1, data) {
-        if (err1) {
-            logData('Unable to open ' + CONFIG_FILE + " : " + err1.toString());
-            return;
-        }
-        console.log("Data Loaded from File: " + CONFIG_FILE);
-        configs = JSON.parse(data)["config"];
-        console.log(configs);
-        console.log(configs["type"]);
-        });
-    } else {
-         logData('Unable to open ' + CONFIG_FILE + " : " + err.toString());
-    }
-});
-*/
-    
 }
 
 function readJSON(fileName, callback){
-fs.access(fileName, fs.F_OK, function(err) {
-    if (!err) {
-        console.log("File exists");
-        fs.readFile(fileName, function(err1, data) {
-        if (err1) {
-            logData('Unable to open ' + fileName + " : " + err1.toString());
-            callback(null);
-        }
-        console.log("Data Loaded from File: " + fileName);
-        callback(JSON.parse(data));
-        });
-    } else {
-         logData('Unable to open ' + fileName + " : " + err.toString());
-    }
-});
-    
+	fs.access(fileName, fs.F_OK, function(err) {
+	    if (!err) {
+	        fs.readFile(fileName, function(err1, data) {
+	        if (err1) {
+	            logData('Read file error ' + fileName + " : " + err1.toString());
+	            callback(null);
+	        }
+	        console.log("Data Loaded from File: " + fileName);
+	        callback(JSON.parse(data));
+	        });
+	    }
+	    else {
+	         logData('Unable to open ' + fileName + " : " + err.toString());
+	    }
+  });
+}
+
+function writeJSON(fileName, data, callback){
+    fs.writeFile(fileName, JSON.stringify(data),function(err, data) {
+      if (err) {
+            logData('Unable to write to ' + fileName + ": " + err.toString());
+            return;
+      }
+    console.log("Data written to File: " + fileName);
+    });
 }
 
 //takes the raw serial rfid data and converts it to a user ID
 function rfidValue(rawRFID) {
-    //console.log(rawRFID);
     var rfid = rawRFID.slice(rawRFID.indexOf(0x02) + 1, rawRFID.indexOf(0x02) + 13);
     var cardID = 0;
     var chxm = 0;
@@ -153,13 +146,12 @@ function rfidValue(rawRFID) {
     rfid.forEach(function(value) {
         rfidstring = rfidstring.concat(String.fromCharCode(value));
     });
-    
+
     for (i = 0; i < rfidstring.length-2; i+=2) {
         chxm = chxm ^ parseInt("0x" + rfidstring.slice(i,i+2).join(""));
     }
-    //console.log(parseInt(chxm,16));
     rfid = rfidstring.join("");
-    cardID = pad(parseInt("0x" + rfid.slice(4,10)),10); 
+    cardID = pad(parseInt("0x" + rfid.slice(4,10)),10);
     if (chxm == parseInt("0x" + rfid.slice(10,13))){
         return cardID
     }
@@ -171,7 +163,8 @@ function rfidValue(rawRFID) {
 
 //setup gpio here
 function setupGPIO(){
-	rpio.open(11, rpio.OUTPUT, rpio.LOW);
+	rpio.open(RELAY_PIN, rpio.OUTPUT, rpio.LOW);
+  rpio.open(BUZZER_PIN, rpio.OUTPUT, rpio.LOW);
 }
 
 //front pads a number with zeros to a specific length
@@ -209,8 +202,8 @@ function loadRFIDLocal() {
 //if successful the data is written locally
 //otherwise loads data from the local file.
 function loadRFIDServer() {
-    console.log(sprintf(url,configs["type"],configs["id"],configs["api"]));
-    https.get(sprintf(url,configs["type"],configs["id"],configs["api"]), function (res) {
+    var _url = sprintf(url,configs["type"],configs["id"],configs["api"])
+    https.get(_url, function (res) {
         var body = '';
 
         res.on('data', function(chunk) {
@@ -230,7 +223,7 @@ function loadRFIDServer() {
             }
         });
     }).on('error', function(e) {
-        console.log("Error Retrieving RFID Data from Server: ", e);
+        console.log("Error Retrieving RFID Data from Server: " + _url, e);
 	      loadRFIDLocal();
         return;
     });
@@ -263,7 +256,7 @@ function verifySchedule(accessGroup) {
     var day = now.getDay();
     var time = (now.getHours()*100)+now.getMinutes();
     if (accessGroup == ADMIN_GROUP) return true;
-    
+
     var sched = RFIDData["schedule"][accessGroup];
     if (typeof sched == 'undefined') return false;
     for (var key in sched) {
@@ -279,9 +272,9 @@ function verifySchedule(accessGroup) {
 
 // returns true if it is a holiday and the user group is excluded
 function isHoliday(accessGroup){
-    var now = new Date("2016", "11", "25").toJSON();
+    var now = new Date().toJSON();
     var holidays = RFIDData["holidays"];
-    
+
     now = now.slice(0,10);
 
     if (typeof holidays == 'undefined') return false;
@@ -296,18 +289,20 @@ function isHoliday(accessGroup){
         }
     }
     return false;
-} 
+}
 
 //Triggers the user action based on proper permissions
 function userAction(userID){
 	accessGroup = lookupaccessGroup(userID);
   if (verifySchedule(accessGroup) && !isHoliday(accessGroup)){
 	    logData("Access Granted - UserID: " + userID + " Access Group: " + accessGroup);
-	    // Trigger relay for 2 second
-      triggerRelay(2);
+
+      accessGranted();
 	}
   else {
     logData("Access Denied - UserID: " + userID + " Access Group: " + accessGroup);
+    
+    accessDenied();
   }
 }
 
@@ -316,9 +311,35 @@ function logData(message){
     console.log(message);
 }
 
-function triggerRelay(onTime){
-      console.log("Trigger Relay: " + onTime);
-      rpio.write(11, rpio.HIGH);
-      rpio.sleep(onTime);
-      rpio.write(11, rpio.LOW);
+
+function loadState(){
+	readJSON(CONFIG_FILE, function(data) {
+		machineState = data;
+	});
+}
+
+function accessGranted(){
+      rpio.write(BUZZER_PIN, rpio.HIGH);
+      rpio.write(RELAY_PIN, rpio.HIGH);
+      rpio.sleep(0.1);
+      rpio.write(BUZZER_PIN, rpio.LOW);
+      rpio.sleep(2);
+      rpio.write(RELAY_PIN, rpio.LOW);
+}
+
+function accessDenied(){
+      rpio.write(BUZZER_PIN, rpio.HIGH);
+      rpio.sleep(0.1);
+      rpio.write(BUZZER_PIN, rpio.LOW);
+      rpio.sleep(0.1);
+      rpio.write(BUZZER_PIN, rpio.HIGH);
+      rpio.sleep(0.1);
+      rpio.write(BUZZER_PIN, rpio.LOW);
+}
+
+function saveState(){
+	writeJSON(LOCAL_STATE_FILE, machineState, function(bool) {
+		if (bool) console.log("Data written successfully to file");
+		else console.log("Failed to write data to file");
+	});
 }
