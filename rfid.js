@@ -34,13 +34,15 @@ const BUZZER_PIN = 11;
 var dataState = 0;
 
 var accessVars = {
-    accessMode: 0, // 0 normal operation , 1 open any, 2 admin only, 3 lock open, 4 lock out, 5 out of service
+    accessMode: 0,
     quintescent: 0
 };
 
 
 var RFIDData;
-var machineState = "{accessMode:'0'}";
+
+// accessMode: 0 normal operation , 1 open any, 2 admin only, 3 lock open, 4 lock out, 5 out of service
+var machineState = "{accessMode:'0'}";  
 var userID;
 var accessGroup;
 
@@ -98,7 +100,6 @@ serialport.on('open', function() { // open serial port
 function configsLoaded(data){
     if (data != null){
       configs = data["config"];
-      console.log(configs["config"]);
       console.log("Configs Loaded");
       loadRFIDServer();
     }
@@ -255,7 +256,7 @@ function verifySchedule(accessGroup) {
     var now = new Date();
     var day = now.getDay();
     var time = (now.getHours()*100)+now.getMinutes();
-    if (accessGroup == ADMIN_GROUP) return true;
+    //if (accessGroup == ADMIN_GROUP) return true;
 
     var sched = RFIDData["schedule"][accessGroup];
     if (typeof sched == 'undefined') return false;
@@ -291,19 +292,89 @@ function isHoliday(accessGroup){
     return false;
 }
 
+function checkAccessState(accessGroup){  //returns true if accessMode is in a useable state
+// accessMode: 0 normal operation , 1 open any, 2 admin only, 3 lock open, 4 lock out, 5 out of service
+
+    var useable = 0;
+    var reason = "";
+    
+    switch (parseInt(machineState['accessMode'])) {
+    
+                case 0:  
+                case 1:
+                case 3:
+                         useable = 1;
+                         break;
+                case 2:
+                         if (accessGroup == ADMIN_GROUP){ 
+                             useable = 1;
+                         }
+                         else{
+                             reason = " ADMIN ONLY";
+                         }
+
+                         break;
+                case 4:  
+                         reason = " LOCKED OUT";
+                         break;
+                case 5:  
+                         reason = " OUT OF SERVICE";
+                         break;
+                default: 
+                         break;
+            }
+            
+    return [useable,reason];
+    
+}
+
 //Triggers the user action based on proper permissions
 function userAction(userID){
 	accessGroup = lookupaccessGroup(userID);
-  if (verifySchedule(accessGroup) && !isHoliday(accessGroup)){
-	    logData("Access Granted - UserID: " + userID + " Access Group: " + accessGroup);
-
-      accessGranted();
+  var holiday = isHoliday(accessGroup);
+  var schedule = verifySchedule(accessGroup);
+  var accessState = checkAccessState(accessGroup);
+  var denyString = "Access Denied -";
+ 
+  if (schedule && !holiday && accessState[0]){
+	    logData("Access Granted");
+      	    accessGranted();
 	}
-  else {
-    logData("Access Denied - UserID: " + userID + " Access Group: " + accessGroup);
-    
-    accessDenied();
+  else{
+      if(!accessState[0]) denyString += accessState[1];
+      else if(holiday) denyString += "CLOSED FOR HOLIDAY"
+      else if(!schedule) denyString += sprintf(" %s : OUTSIDE OF SCHEDULE",accessGroupString(accessGroup));
+      
+  
+      logData(denyString);
+  
+      accessDenied();
   }
+}
+
+function accessGroupString(accessGroup){
+	switch (parseInt(accessGroup)) {
+    
+                case 0:		
+			return "Non-paying Member";
+                case 1:	
+			return "TXRX Supporter";
+		case 2:	
+			return "Amigotron";
+                case 10:
+			return "Tinkerer";
+                case 21:
+			return "Hacker";
+		case 23:
+			return "Maker";
+		case 30:
+			return "Table Hacker";
+		case 40:
+			return "studio Resident";
+                default: 
+			return "";
+	}
+
 }
 
 //log user and date/time for each attempt with result
@@ -313,7 +384,7 @@ function logData(message){
 
 
 function loadState(){
-	readJSON(CONFIG_FILE, function(data) {
+	readJSON(LOCAL_STATE_FILE, function(data) {
 		machineState = data;
 	});
 }
