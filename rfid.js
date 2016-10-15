@@ -28,7 +28,7 @@ const LOCAL_PERMISSION_FILE = "./accessRFID.json";
 const LOCAL_STATE_FILE = "./state.json"
 const LOCAL_LOG_FILE = "./log";
 
-const RELAY_PIN = 16;
+const RELAY_PIN = 15;
 const BUZZER_PIN = 11;
 
 var dataState = 0;
