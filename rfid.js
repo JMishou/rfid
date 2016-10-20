@@ -9,6 +9,8 @@ var rpio = require('rpio');
 var fs = require('fs');
 var SerialPort = require("serialport");
 var sprintf = require("sprintf-js").sprintf;
+var oled = require('oled-js-pi');
+var font = require('oled-font-5x7');
 
 
 //Global variables
@@ -40,9 +42,10 @@ var accessVars = {
 
 
 var RFIDData;
+var oledCnt = 0;
 
 // accessMode: 0 normal operation , 1 open any, 2 admin only, 3 lock open, 4 lock out, 5 out of service
-var machineState = "{accessMode:'0'}";  
+var machineState = "{accessMode:'0'}";
 var userID;
 var accessGroup;
 
@@ -66,12 +69,22 @@ var configs;
   */
 var serdata = [];
 
+var oledOpts = {
+  width: 128,
+  height: 64,
+  address: 0x3C
+};
+
+var oled = new oled(oledOpts);
+
 
 //Main code
 
 loadState();
 loadConfig(configsLoaded); //load configurations and then run configsLoaded()
 setupGPIO();  //setup the GPIO pins
+updateScreen();
+var oledInterval = setInterval(updateScreen, 2000);
 //setTimeout(loadRFIDServer(),0); // load rfid data
 
 serialport.on('open', function() { // open serial port
@@ -101,6 +114,7 @@ function configsLoaded(data){
     if (data != null){
       configs = data["config"];
       console.log("Configs Loaded");
+      console.log(configs);
       loadRFIDServer();
     }
 }
@@ -297,16 +311,16 @@ function checkAccessState(accessGroup){  //returns true if accessMode is in a us
 
     var useable = 0;
     var reason = "";
-    
+
     switch (parseInt(machineState['accessMode'])) {
-    
-                case 0:  
+
+                case 0:
                 case 1:
                 case 3:
                          useable = 1;
                          break;
                 case 2:
-                         if (accessGroup == ADMIN_GROUP){ 
+                         if (accessGroup == ADMIN_GROUP){
                              useable = 1;
                          }
                          else{
@@ -314,52 +328,55 @@ function checkAccessState(accessGroup){  //returns true if accessMode is in a us
                          }
 
                          break;
-                case 4:  
+                case 4:
                          reason = " LOCKED OUT";
                          break;
-                case 5:  
+                case 5:
                          reason = " OUT OF SERVICE";
                          break;
-                default: 
+                default:
                          break;
             }
-            
+
     return [useable,reason];
-    
+
 }
 
 //Triggers the user action based on proper permissions
 function userAction(userID){
-	accessGroup = lookupaccessGroup(userID);
+  var accessGroup = lookupaccessGroup(userID);
   var holiday = isHoliday(accessGroup);
   var schedule = verifySchedule(accessGroup);
   var accessState = checkAccessState(accessGroup);
   var denyString = "Access Denied -";
- 
-  if (schedule && !holiday && accessState[0]){
+  if (parseInt(machineState['accessMode']) == 3){
+	logData(sprintf("Access Granted - %s - Access Group: %s - User ID: %s", "Mode: Open Any",accessGroupString(accessGroup),userID));
+	accessGranted();
+  }
+  else if (schedule && !holiday && accessState[0]){
 	    logData("Access Granted");
       	    accessGranted();
-	}
+  }
   else{
       if(!accessState[0]) denyString += accessState[1];
       else if(holiday) denyString += "CLOSED FOR HOLIDAY"
       else if(!schedule) denyString += sprintf(" %s : OUTSIDE OF SCHEDULE",accessGroupString(accessGroup));
-      
-  
+
+
       logData(denyString);
-  
+
       accessDenied();
   }
 }
 
 function accessGroupString(accessGroup){
 	switch (parseInt(accessGroup)) {
-    
-                case 0:		
+
+                case 0:
 			return "Non-paying Member";
-                case 1:	
+                case 1:
 			return "TXRX Supporter";
-		case 2:	
+		case 2:
 			return "Amigotron";
                 case 10:
 			return "Tinkerer";
@@ -371,7 +388,7 @@ function accessGroupString(accessGroup){
 			return "Table Hacker";
 		case 40:
 			return "studio Resident";
-                default: 
+                default:
 			return "";
 	}
 
@@ -413,4 +430,18 @@ function saveState(){
 		if (bool) console.log("Data written successfully to file");
 		else console.log("Failed to write data to file");
 	});
+}
+
+function updateScreen(){
+	oledCnt++;
+	oled.clearDisplay();
+	if (oledCnt%2) {
+		oled.setCursor(1, 1);
+		oled.writeString(font, 2, 'Welcome to TX/RX', 1, true);
+	}		
+	else {
+		oled.setCursor(1, 1);
+		oled.writeString(font, 2, 'Scan Badge Here', 1, true);
+	}
+
 }
