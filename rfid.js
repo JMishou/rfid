@@ -407,6 +407,7 @@ function loadState(){
 }
 
 function accessGranted(){
+      oledMessage("Access Granted");
       rpio.write(BUZZER_PIN, rpio.HIGH);
       rpio.write(RELAY_PIN, rpio.HIGH);
       rpio.sleep(0.1);
@@ -416,6 +417,7 @@ function accessGranted(){
 }
 
 function accessDenied(){
+      oledMessage("Access Denied");
       rpio.write(BUZZER_PIN, rpio.HIGH);
       rpio.sleep(0.1);
       rpio.write(BUZZER_PIN, rpio.LOW);
@@ -444,4 +446,12 @@ function updateScreen(){
 		oled.writeString(font, 2, 'Scan Badge Here', 1, true);
 	}
 
+}
+
+function oledMessage(msg){
+	clearInterval(oledInterval);
+	oled.clearDisplay();
+	oled.setCursor(1, 1);
+	oled.writeString(font, 2, msg, 1, true);
+	oledInterval = setInterval(updateScreen, 2000);
 }
