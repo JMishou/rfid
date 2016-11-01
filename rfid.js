@@ -1,17 +1,29 @@
-//Libraries
-
 var http = require("http");
 var https = require("https");
 var os = require("os");
 var querystring = require("querystring");
 var hostname = os.hostname();
-var rpio = require('rpio');
+var Gpio = require('pigpio').Gpio;
 var fs = require('fs');
 var SerialPort = require("serialport");
 var sprintf = require("sprintf-js").sprintf;
-var oled = require('oled-js-pi');
-var font = require('oled-font-5x7');
+var async = require("async");
+//var sleep = require("sleep");
+//var sh = require("shelljs");
 
+var fork = require('child_process').fork;
+var oledHandler = fork('./oled-handler.js');
+
+
+
+/*
+var i2c = require('i2c-bus');
+var i2cBus = i2c.open(1, function (err) {  if (err) throw err; });
+var oled = require('oled-i2c-bus');
+
+//var oled = require('oled-js-pi');
+var font = require('oled-font-5x7');
+*/
 
 //Global variables
 
@@ -25,13 +37,16 @@ const NORMAL_SMSG = "Normal User Mode";
 const NORMAL_FMSG = "Normal Mode User Schedule Invalid";
 const DATA_STATE_UNLOADED = 0;
 const DATA_STATE_LOADED = 1;
-const CONFIG_FILE = "./config.json";
-const LOCAL_PERMISSION_FILE = "./accessRFID.json";
-const LOCAL_STATE_FILE = "./state.json"
-const LOCAL_LOG_FILE = "./log";
+const CONFIG_FILE = "/config.json";
+const LOCAL_PERMISSION_FILE = "/accessRFID.json";
+const LOCAL_STATE_FILE = "/state.json"
+const LOCAL_LOG_FILE = "/log.log";
+const WORKING_DIRECTORY = "/home/pi/rfid";
 
-const RELAY_PIN = 15;
-const BUZZER_PIN = 11;
+var oledHandler = fork(WORKING_DIRECTORY + '/oled-handler.js');
+
+const RELAY_PIN = 22;
+const BUZZER_PIN = 17;
 
 var dataState = 0;
 
@@ -40,16 +55,19 @@ var accessVars = {
     quintescent: 0
 };
 
+var buzzer =  null;
+var relay  =  null;
+
 
 var RFIDData;
 var oledCnt = 0;
+var oledBusy = 0;
 
 // accessMode: 0 normal operation , 1 open any, 2 admin only, 3 lock open, 4 lock out, 5 out of service
 var machineState = "{accessMode:'0'}";
 var userID;
 var accessGroup;
 
-//var ReadLine = SerialPort.parsers.ReadLine;
 var serialport = new SerialPort('/dev/serial0', {
   parser: SerialPort.parsers.byteDelimiter([03])
 });
@@ -69,31 +87,29 @@ var configs;
   */
 var serdata = [];
 
-var oledOpts = {
-  width: 128,
-  height: 64,
-  address: 0x3C
-};
-
-var oled = new oled(oledOpts);
-
+oledHandler.on('message', function(response) {
+  console.log(response);
+});
 
 //Main code
 
+console.time("init");
 loadState();
 loadConfig(configsLoaded); //load configurations and then run configsLoaded()
 setupGPIO();  //setup the GPIO pins
 updateScreen();
 var oledInterval = setInterval(updateScreen, 2000);
-//setTimeout(loadRFIDServer(),0); // load rfid data
 
+console.timeEnd("init");
 serialport.on('open', function() { // open serial port
-    console.log('Serial Port Opened');
+    logData('Serial Port Opened');
     serialport.on('data', function(data) { // on get data
+        console.time("read rfid")
         Array.prototype.push.apply(serdata, data); // push the serial data to an array
 
     if (serdata.slice(serdata.indexOf(0x02), serdata.length).length >= 14) { // if the array is now 14 characters long
 		    userID = rfidValue(serdata);
+            serialport.flush(function(err,results){});
 	    	serdata = [];
 
 		    var currRFIDTime = (new Date).getTime();
@@ -102,8 +118,9 @@ serialport.on('open', function() { // open serial port
 			      return;
 		    }
 		    lastRFIDTime = currRFIDTime;
+            console.timeEnd("read rfid")
 		    userAction(userID);
-        serialport.flush(function(err,results){});
+        	
         }
     });
 });
@@ -113,14 +130,14 @@ serialport.on('open', function() { // open serial port
 function configsLoaded(data){
     if (data != null){
       configs = data["config"];
-      console.log("Configs Loaded");
-      console.log(configs);
-      loadRFIDServer();
+      logData("Configs Loaded");
+      //loadRFIDServer();
+      loadRFIDLocal();
     }
 }
 
 function loadConfig(callback){
-    readJSON(CONFIG_FILE, callback);
+    readJSON(WORKING_DIRECTORY + CONFIG_FILE, callback);
 }
 
 function readJSON(fileName, callback){
@@ -131,7 +148,7 @@ function readJSON(fileName, callback){
 	            logData('Read file error ' + fileName + " : " + err1.toString());
 	            callback(null);
 	        }
-	        console.log("Data Loaded from File: " + fileName);
+	        logData("Data Loaded from File: " + fileName);
 	        callback(JSON.parse(data));
 	        });
 	    }
@@ -147,7 +164,7 @@ function writeJSON(fileName, data, callback){
             logData('Unable to write to ' + fileName + ": " + err.toString());
             return;
       }
-    console.log("Data written to File: " + fileName);
+    logData("Data written to File: " + fileName);
     });
 }
 
@@ -158,13 +175,32 @@ function rfidValue(rawRFID) {
     var chxm = 0;
     var rfidstring = [];
 
-    rfid.forEach(function(value) {
+    async.eachSeries(rfid,function(value, callback) {
         rfidstring = rfidstring.concat(String.fromCharCode(value));
-    });
+        
+	callback();
+    }, function(err) {
+	    if( err ) {
+	      console.log(err);
+	    } 
+    	});
 
-    for (i = 0; i < rfidstring.length-2; i+=2) {
-        chxm = chxm ^ parseInt("0x" + rfidstring.slice(i,i+2).join(""));
-    }
+
+    var i = 0;
+    async.whilst(
+	function () { return i < rfidstring.length-2; },
+	function (callback) {
+		chxm = chxm ^ parseInt("0x" + rfidstring.slice(i,i+2).join(""));
+		i += 2;
+		callback();
+	},
+	function (err) {
+		if (err){
+			throw err;
+		}
+	}
+    );
+
     rfid = rfidstring.join("");
     cardID = pad(parseInt("0x" + rfid.slice(4,10)),10);
     if (chxm == parseInt("0x" + rfid.slice(10,13))){
@@ -178,8 +214,8 @@ function rfidValue(rawRFID) {
 
 //setup gpio here
 function setupGPIO(){
-	rpio.open(RELAY_PIN, rpio.OUTPUT, rpio.LOW);
-  rpio.open(BUZZER_PIN, rpio.OUTPUT, rpio.LOW);
+	buzzer =  new Gpio(BUZZER_PIN, {mode: Gpio.OUTPUT});
+	relay  =  new Gpio(RELAY_PIN, {mode: Gpio.OUTPUT});
 }
 
 //front pads a number with zeros to a specific length
@@ -190,25 +226,25 @@ function pad(num, size) {
 
 //Saves rfid table to a local file
 function saveRFIDState() {
-    fs.writeFile(LOCAL_PERMISSION_FILE, JSON.stringify(RFIDData),function(err, data) {
+    fs.writeFile(WORKING_DIRECTORY + LOCAL_PERMISSION_FILE, JSON.stringify(RFIDData),function(err, data) {
       if (err) {
             logData('Unable to write file: ' + err.toString());
             return;
       }
-    console.log("RFID Data Saved to File.");
+    logData("RFID Data Saved to File.");
     });
 }
 
 //Loads rfid data from a local file
 function loadRFIDLocal() {
-    fs.readFile(LOCAL_PERMISSION_FILE, function(err, data) {
+    fs.readFile(WORKING_DIRECTORY + LOCAL_PERMISSION_FILE, function(err, data) {
         if (err) {
             logData('No local RFID File Found contacting server: ' + err.toString());
             RFIDLoadInterval = setInterval(loadRFIDServer, 30000);
             return;
         }
         RFIDData = JSON.parse(data);
-        console.log("RFID Data Loaded from File.");
+        logData("RFID Data Loaded from File.");
         dataState = 1;
     });
 }
@@ -217,7 +253,7 @@ function loadRFIDLocal() {
 //if successful the data is written locally
 //otherwise loads data from the local file.
 function loadRFIDServer() {
-    var _url = sprintf(url,configs["type"],configs["id"],configs["api"])
+    var _url = sprintf(url,configs["type"],configs["id"],configs["api"]);
     https.get(_url, function (res) {
         var body = '';
 
@@ -228,7 +264,7 @@ function loadRFIDServer() {
         res.on('end', function() {
             if (isJSONString(body)){
                 RFIDData = JSON.parse(body);
-                console.log("Recieved RFID Data from Server.");
+                logData("Recieved RFID Data from Server.");
                 saveRFIDState();
                 dataState = 1;
                 clearInterval(RFIDLoadInterval);
@@ -238,7 +274,7 @@ function loadRFIDServer() {
             }
         });
     }).on('error', function(e) {
-        console.log("Error Retrieving RFID Data from Server: " + _url, e);
+        logData("Error Retrieving RFID Data from Server: " + _url, e);
 	      loadRFIDLocal();
         return;
     });
@@ -247,13 +283,31 @@ function loadRFIDServer() {
 
 //Looks up a user group level based on the userID
 function lookupaccessGroup(userID) {
-    var keys = [];
-    for (var key in RFIDData["rfids"]) {
-        if (RFIDData["rfids"].hasOwnProperty(key)) {
-            if (RFIDData["rfids"][key].indexOf(userID) != -1) return key;
-        }
-    }
-    return -1;
+    var ag = null;
+
+	async.reduce(Object.keys(RFIDData["rfids"]),-1 ,function(memo, item, callback) {
+		var ret = memo;
+		// Perform operation on file here.
+		if (ret == -1) {
+			if (RFIDData["rfids"][item].indexOf(userID) != -1) {
+                ret = item;
+            }
+		}
+
+		callback(null, ret);
+
+		}, function(err, result) {
+				// if any of the file processing produced an error, err would equal that error
+				if( err ) {
+					// One of the iterations produced an error.
+					// All processing will now stop.
+					console.log(err.toString());
+				} else {
+				    ag = result;
+			}
+	});
+
+    return ag;
 }
 
 function isJSONString(str) {
@@ -270,40 +324,66 @@ function verifySchedule(accessGroup) {
     var now = new Date();
     var day = now.getDay();
     var time = (now.getHours()*100)+now.getMinutes();
-    //if (accessGroup == ADMIN_GROUP) return true;
-
+    var scheduleVerified = false;
     var sched = RFIDData["schedule"][accessGroup];
-    if (typeof sched == 'undefined') return false;
-    for (var key in sched) {
-        if (sched.hasOwnProperty(key) && key==day) {
-            if (sched[key][0]<=time && sched[key][1] >= time)  {
-              return true;
+    if (typeof sched != 'undefined') {
+        async.reduce(Object.keys(sched),false ,function(memo, item, callback) {
+            var ret = memo;
+            if (!ret) {
+                if (item == day && sched[item][0] <= time && sched[item][1] >= time) ret = true;
             }
-        }
+
+            callback(null, ret);
+
+            }, function(err, result) {
+                    // if any of the file processing produced an error, err would equal that error
+                    if( err ) {
+                        // One of the iterations produced an error.
+                        // All processing will now stop.
+                        console.log(err.toString());
+                    } else {
+
+                    scheduleVerified = result;
+                }
+        });
     }
-    return false;
+    return scheduleVerified;
 }
 
 
 // returns true if it is a holiday and the user group is excluded
 function isHoliday(accessGroup){
+    console.log("accessGroup:" + accessGroup);
     var now = new Date().toJSON();
     var holidays = RFIDData["holidays"];
-
+    holidayVerified = false;
     now = now.slice(0,10);
 
-    if (typeof holidays == 'undefined') return false;
-    for (var key in holidays) {
-        if (holidays.hasOwnProperty(key) && key==now) {
-            if (holidays[key][0] == accessGroup) {
-              return false;
+    if (typeof holidays != 'undefined') {
+        async.reduce(Object.keys(holidays),false ,function(memo, item, callback) {
+            var ret = memo;
+            if (!ret) {
+                if (item==now) {
+                    if (holidays[item][0] == accessGroup) {
+                        ret = false;
+                    }
+                    else{
+                        ret = true;
+                    }
+                }
             }
-            else{
-              return true;
-            }
-        }
+
+            callback(null, ret);
+
+            }, function(err, result) {
+                    if( err ) {
+                        console.log(err.toString());
+                    } else {
+                    holidayVerified = result;
+                }
+        });
     }
-    return false;
+    return holidayVerified;
 }
 
 function checkAccessState(accessGroup){  //returns true if accessMode is in a useable state
@@ -344,12 +424,21 @@ function checkAccessState(accessGroup){  //returns true if accessMode is in a us
 
 //Triggers the user action based on proper permissions
 function userAction(userID){
+  console.time("User Lookup");  
   var accessGroup = lookupaccessGroup(userID);
   var holiday = isHoliday(accessGroup);
   var schedule = verifySchedule(accessGroup);
   var accessState = checkAccessState(accessGroup);
   var denyString = "Access Denied -";
+  console.timeEnd("User Lookup"); 
   if (parseInt(machineState['accessMode']) == 3){
+    logData(sprintf("Access Granted - %s - Access Group: %s - User ID: %s", "Mode: Open Any",accessGroupString(accessGroup),userID));
+    if (accessGroup == -1){
+        oledWarning([
+                    ['Badge not in system', 2000],
+                    ['register with staff' , 2000]
+                    ]);
+    }
 	logData(sprintf("Access Granted - %s - Access Group: %s - User ID: %s", "Mode: Open Any",accessGroupString(accessGroup),userID));
 	accessGranted();
   }
@@ -396,62 +485,105 @@ function accessGroupString(accessGroup){
 
 //log user and date/time for each attempt with result
 function logData(message){
-    console.log(message);
+    console.log(message); 
+    fs.appendFile(WORKING_DIRECTORY + LOCAL_LOG_FILE, Date.now().toString + '\t' + message + '\n',function(err, data) {
+      if (err) { 
+            console.log('Unable to write to ' + fileName + ": " + err.toString());
+            return;
+      }
+    });
 }
 
-
 function loadState(){
-	readJSON(LOCAL_STATE_FILE, function(data) {
+	readJSON(WORKING_DIRECTORY + LOCAL_STATE_FILE, function(data) {
 		machineState = data;
 	});
 }
 
-function accessGranted(){
-      oledMessage("Access Granted");
-      rpio.write(BUZZER_PIN, rpio.HIGH);
-      rpio.write(RELAY_PIN, rpio.HIGH);
-      rpio.sleep(0.1);
-      rpio.write(BUZZER_PIN, rpio.LOW);
-      rpio.sleep(2);
-      rpio.write(RELAY_PIN, rpio.LOW);
-}
-
-function accessDenied(){
-      oledMessage("Access Denied");
-      rpio.write(BUZZER_PIN, rpio.HIGH);
-      rpio.sleep(0.1);
-      rpio.write(BUZZER_PIN, rpio.LOW);
-      rpio.sleep(0.1);
-      rpio.write(BUZZER_PIN, rpio.HIGH);
-      rpio.sleep(0.1);
-      rpio.write(BUZZER_PIN, rpio.LOW);
-}
-
 function saveState(){
-	writeJSON(LOCAL_STATE_FILE, machineState, function(bool) {
-		if (bool) console.log("Data written successfully to file");
-		else console.log("Failed to write data to file");
+	writeJSON(WORKING_DIRECTORY + LOCAL_STATE_FILE, machineState, function(bool) {
+		if (bool) logData("Data written successfully to file");
+		else logData("Failed to write data to file");
 	});
 }
 
+function accessGranted(){
+    console.time("access granted");
+    buzzer.digitalWrite(1);
+    relay.digitalWrite(1);
+    setTimeout(function() { buzzer.digitalWrite(0); }, 100);
+    setTimeout(function() { relay.digitalWrite(0); }, 6000);
+    oledMessage("Access Granted",false);
+    console.timeEnd("access granted");
+}
+
+function accessDenied(){
+    buzzer.digitalWrite(1);
+    oledMessage("Access Denied",false);
+    async.series([
+        function(callback){
+            setTimeout(function() { buzzer.digitalWrite(0); }, 100);
+            callback(null,null);
+        },
+        function(callback){
+            setTimeout(function() { buzzer.digitalWrite(1); }, 200);
+            callback(null,null);
+        },
+        function(callback){
+            setTimeout(function() { buzzer.digitalWrite(0); }, 300);
+            callback(null,null);
+        }
+    ]);
+}
+
 function updateScreen(){
-	oledCnt++;
-	oled.clearDisplay();
-	if (oledCnt%2) {
-		oled.setCursor(1, 1);
-		oled.writeString(font, 2, 'Welcome to TX/RX', 1, true);
-	}		
-	else {
-		oled.setCursor(1, 1);
-		oled.writeString(font, 2, 'Scan Badge Here', 1, true);
-	}
+	if (!oledBusy){
+        if (oledCnt) {
+            oledHandler.send("Welcome to TX/RX");
+            oledCnt = 0;
+        }		
+        else {
+            oledHandler.send("Scan Badge Here");
+            oledCnt = 1;
+        }
+    }
+    
+}
+
+function oledMessage(msg, priority){
+    if (!oledBusy || priority){
+        oledHandler.send(msg);
+    }
 
 }
 
-function oledMessage(msg){
-	clearInterval(oledInterval);
-	oled.clearDisplay();
-	oled.setCursor(1, 1);
-	oled.writeString(font, 2, msg, 1, true);
-	oledInterval = setInterval(updateScreen, 2000);
+function oledWarning(warning){ //warning : [ ['message1', time1], ['message2', time2], ['message3', time3], ... ]
+    //console.log(warning);
+    pauseOled();
+    var totalTime = 100;
+    async.eachSeries(warning,
+              function(value, callback){
+                    var val = value;
+                    setTimeout(function (){
+                            oledMessage(val[0],true);
+                    },totalTime);
+                    totalTime += val[1];
+                    callback();
+              }
+    );
+
+    setTimeout(function() { resumeOled(); }, totalTime);
+    
+}
+
+function pauseOled(){
+    oledBusy = 1;
+    clearInterval(oledInterval);
+    console.log("pause");
+}
+
+function resumeOled(){
+    oledBusy = 0;
+    oledInterval = setInterval(updateScreen, 2000);
+    console.log("resume");
 }
