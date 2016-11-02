@@ -131,8 +131,7 @@ function configsLoaded(data){
     if (data != null){
       configs = data["config"];
       logData("Configs Loaded");
-      //loadRFIDServer();
-      loadRFIDLocal();
+      loadRFIDServer();
     }
 }
 
@@ -284,7 +283,6 @@ function loadRFIDServer() {
 //Looks up a user group level based on the userID
 function lookupaccessGroup(userID) {
     var ag = null;
-
 	async.reduce(Object.keys(RFIDData["rfids"]),-1 ,function(memo, item, callback) {
 		var ret = memo;
 		// Perform operation on file here.
