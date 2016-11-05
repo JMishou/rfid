@@ -8,11 +8,10 @@ var fs = require('fs');
 var SerialPort = require("serialport");
 var sprintf = require("sprintf-js").sprintf;
 var async = require("async");
-//var sleep = require("sleep");
-//var sh = require("shelljs");
-
+var mqtt = require('mqtt')
 var fork = require('child_process').fork;
-var oledHandler = fork('./oled-handler.js');
+
+
 
 
 
@@ -44,6 +43,7 @@ const LOCAL_LOG_FILE = "/log.log";
 const WORKING_DIRECTORY = "/home/pi/rfid";
 
 var oledHandler = fork(WORKING_DIRECTORY + '/oled-handler.js');
+var mqtt_client  = mqtt.connect('mqtt://headcheese')
 
 const RELAY_PIN = 22;
 const BUZZER_PIN = 17;
@@ -57,7 +57,6 @@ var accessVars = {
 
 var buzzer =  null;
 var relay  =  null;
-
 
 var RFIDData;
 var oledCnt = 0;

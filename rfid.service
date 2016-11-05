@@ -1,0 +1,11 @@
+[Unit]
+Description=rfid service
+
+[Service]
+Type=simple
+ExecStart=sudo /usr/local/bin/node /home/pi/rfid/rfid.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
