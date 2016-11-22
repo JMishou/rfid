@@ -38,7 +38,6 @@ const DATA_STATE_UNLOADED = 0;
 const DATA_STATE_LOADED = 1;
 const CONFIG_FILE = "/config.json";
 const LOCAL_PERMISSION_FILE = "/accessRFID.json";
-const LOCAL_STATE_FILE = "/state.json"
 const LOCAL_LOG_FILE = "/log.log";
 const WORKING_DIRECTORY = "/home/pi/rfid";
 
@@ -50,11 +49,6 @@ const BUZZER_PIN = 17;
 
 var dataState = 0;
 
-var accessVars = {
-    accessMode: 0,
-    quintescent: 0
-};
-
 var buzzer =  null;
 var relay  =  null;
 
@@ -63,7 +57,7 @@ var oledCnt = 0;
 var oledBusy = 0;
 
 // accessMode: 0 normal operation , 1 open any, 2 admin only, 3 lock open, 4 lock out, 5 out of service
-var machineState = "{accessMode:'0'}";
+//var machineState = "{accessMode:'0'}";
 var userID;
 var accessGroup;
 
@@ -92,18 +86,18 @@ oledHandler.on('message', function(response) {
 
 //Main code
 
-console.time("init");
-loadState();
+
+//loadState();
 loadConfig(configsLoaded); //load configurations and then run configsLoaded()
 setupGPIO();  //setup the GPIO pins
 updateScreen();
 var oledInterval = setInterval(updateScreen, 2000);
 
-console.timeEnd("init");
+
 serialport.on('open', function() { // open serial port
     logData('Serial Port Opened');
     serialport.on('data', function(data) { // on get data
-        console.time("read rfid")
+
         Array.prototype.push.apply(serdata, data); // push the serial data to an array
 
     if (serdata.slice(serdata.indexOf(0x02), serdata.length).length >= 14) { // if the array is now 14 characters long
@@ -117,7 +111,7 @@ serialport.on('open', function() { // open serial port
 			      return;
 		    }
 		    lastRFIDTime = currRFIDTime;
-            console.timeEnd("read rfid")
+
 		    userAction(userID);
         	
         }
@@ -130,7 +124,9 @@ function configsLoaded(data){
     if (data != null){
       configs = data["config"];
       logData("Configs Loaded");
+      logData(sprintf("Current State: %s",configs["accessMode"]));
       loadRFIDServer();
+      RFIDLoadInterval = setInterval(loadRFIDServer, 300000);
     }
 }
 
@@ -282,14 +278,12 @@ function loadRFIDServer() {
 //Looks up a user group level based on the userID
 function lookupaccessGroup(userID) {
     var ag = null;
-	async.reduce(Object.keys(RFIDData["rfids"]),-1 ,function(memo, item, callback) {
+	async.reduce(Object.keys(RFIDData["rfids"]),[] ,function(memo, item, callback) {
 		var ret = memo;
-		// Perform operation on file here.
-		if (ret == -1) {
-			if (RFIDData["rfids"][item].indexOf(userID) != -1) {
-                ret = item;
-            }
-		}
+		
+		if (RFIDData["rfids"][item].indexOf(userID) != -1) {
+                	ret.push(item);
+            	}
 
 		callback(null, ret);
 
@@ -303,7 +297,7 @@ function lookupaccessGroup(userID) {
 				    ag = result;
 			}
 	});
-
+    if (ag.length == 0) ag.push(-1);
     return ag;
 }
 
@@ -322,63 +316,36 @@ function verifySchedule(accessGroup) {
     var day = now.getDay();
     var time = (now.getHours()*100)+now.getMinutes();
     var scheduleVerified = false;
-    var sched = RFIDData["schedule"][accessGroup];
-    if (typeof sched != 'undefined') {
-        async.reduce(Object.keys(sched),false ,function(memo, item, callback) {
-            var ret = memo;
-            if (!ret) {
-                if (item == day && sched[item][0] <= time && sched[item][1] >= time) ret = true;
-            }
-
-            callback(null, ret);
-
-            }, function(err, result) {
-                    // if any of the file processing produced an error, err would equal that error
-                    if( err ) {
-                        // One of the iterations produced an error.
-                        // All processing will now stop.
-                        console.log(err.toString());
-                    } else {
-
-                    scheduleVerified = result;
-                }
-        });
-    }
+    accessGroup.forEach(function(group){
+	var sched = RFIDData["schedule"][group];
+	if (typeof sched != 'undefined') {
+		Object.keys(sched).forEach(function(item){
+			if (item == day && sched[item][0] <= time && sched[item][1] >= time) scheduleVerified = true;
+		});
+	}
+    });
+    
     return scheduleVerified;
 }
 
 
 // returns true if it is a holiday and the user group is excluded
 function isHoliday(accessGroup){
-    console.log("accessGroup:" + accessGroup);
     var now = new Date().toJSON();
     var holidays = RFIDData["holidays"];
     holidayVerified = false;
     now = now.slice(0,10);
+    if (typeof holidays != 'undefined') {    
 
-    if (typeof holidays != 'undefined') {
-        async.reduce(Object.keys(holidays),false ,function(memo, item, callback) {
-            var ret = memo;
-            if (!ret) {
-                if (item==now) {
-                    if (holidays[item][0] == accessGroup) {
-                        ret = false;
-                    }
-                    else{
-                        ret = true;
-                    }
-                }
-            }
-
-            callback(null, ret);
-
-            }, function(err, result) {
-                    if( err ) {
-                        console.log(err.toString());
-                    } else {
-                    holidayVerified = result;
-                }
-        });
+	    accessGroup.forEach(function(group){
+		var index = Object.keys(holidays).indexOf(now)
+		console.log("Index : " + index);
+			if (index!=-1) {
+			    if (holidays[now][0] != group) {
+			        holidayVerified = true;
+			    }
+			}		
+	    });
     }
     return holidayVerified;
 }
@@ -389,7 +356,7 @@ function checkAccessState(accessGroup){  //returns true if accessMode is in a us
     var useable = 0;
     var reason = "";
 
-    switch (parseInt(machineState['accessMode'])) {
+    switch (parseInt(configs['accessMode'])) {
 
                 case 0:
                 case 1:
@@ -397,7 +364,7 @@ function checkAccessState(accessGroup){  //returns true if accessMode is in a us
                          useable = 1;
                          break;
                 case 2:
-                         if (accessGroup == ADMIN_GROUP){
+                         if (accessGroup.indexOf(ADMIN_GROUP) != -1){
                              useable = 1;
                          }
                          else{
@@ -421,23 +388,30 @@ function checkAccessState(accessGroup){  //returns true if accessMode is in a us
 
 //Triggers the user action based on proper permissions
 function userAction(userID){
-  console.time("User Lookup");  
+ 
   var accessGroup = lookupaccessGroup(userID);
   var holiday = isHoliday(accessGroup);
   var schedule = verifySchedule(accessGroup);
   var accessState = checkAccessState(accessGroup);
   var denyString = "Access Denied -";
-  console.timeEnd("User Lookup"); 
-  if (parseInt(machineState['accessMode']) == 3){
-    logData(sprintf("Access Granted - %s - Access Group: %s - User ID: %s", "Mode: Open Any",accessGroupString(accessGroup),userID));
-    if (accessGroup == -1){
-        oledWarning([
-                    ['Badge not in system', 2000],
-                    ['register with staff' , 2000]
-                    ]);
-    }
+  if (parseInt(configs['accessMode']) == 3){
 	logData(sprintf("Access Granted - %s - Access Group: %s - User ID: %s", "Mode: Open Any",accessGroupString(accessGroup),userID));
+	if (accessGroup == -1){
+	oledWarning([
+		    ['Badge not in system', 2000],
+		    ['register at kiosk' , 2000]
+		    ]);
+	}
 	accessGranted();
+  }
+  else if (accessGroup == -1){
+	logData(sprintf("Badge not in system - Badge Number: %s",userID));
+	accessDenied();
+        oledWarning([
+	    ['Access Denied', 2000],
+            ['Badge not in system', 2000],
+            ['register at kiosk' , 2000]
+            ]);
   }
   else if (schedule && !holiday && accessState[0]){
 	    logData("Access Granted");
@@ -456,28 +430,40 @@ function userAction(userID){
 }
 
 function accessGroupString(accessGroup){
-	switch (parseInt(accessGroup)) {
+	var str = "";
+	accessGroup.forEach(function(group){
+		switch (parseInt(group)) {
 
-                case 0:
-			return "Non-paying Member";
-                case 1:
-			return "TXRX Supporter";
-		case 2:
-			return "Amigotron";
-                case 10:
-			return "Tinkerer";
-                case 21:
-			return "Hacker";
-		case 23:
-			return "Maker";
-		case 30:
-			return "Table Hacker";
-		case 40:
-			return "studio Resident";
-                default:
-			return "";
-	}
-
+		        case 0:
+				str += "Non-paying Member";
+				break;
+		        case 1:
+				str += "TXRX Supporter";
+				break;
+			case 2:
+				str += "Amigotron";
+				break;
+		        case 10:
+				str += "Tinkerer";
+				break;
+		        case 21:
+				str += "Hacker";
+				break;
+			case 23:
+				str += "Maker";
+				break;
+			case 30:
+				str += "Table Hacker";
+				break;
+			case 40:
+				str += "Studio Resident";
+		}
+		if (str != ""){
+			str += ", "
+		}
+	});	
+	str = str.replace(/\, $/, '');
+	return str;
 }
 
 //log user and date/time for each attempt with result
@@ -490,7 +476,7 @@ function logData(message){
       }
     });
 }
-
+/*
 function loadState(){
 	readJSON(WORKING_DIRECTORY + LOCAL_STATE_FILE, function(data) {
 		machineState = data;
@@ -503,15 +489,13 @@ function saveState(){
 		else logData("Failed to write data to file");
 	});
 }
-
+*/
 function accessGranted(){
-    console.time("access granted");
     buzzer.digitalWrite(1);
     relay.digitalWrite(1);
     setTimeout(function() { buzzer.digitalWrite(0); }, 100);
     setTimeout(function() { relay.digitalWrite(0); }, 6000);
     oledMessage("Access Granted",false);
-    console.timeEnd("access granted");
 }
 
 function accessDenied(){
@@ -576,11 +560,9 @@ function oledWarning(warning){ //warning : [ ['message1', time1], ['message2', t
 function pauseOled(){
     oledBusy = 1;
     clearInterval(oledInterval);
-    console.log("pause");
 }
 
 function resumeOled(){
     oledBusy = 0;
     oledInterval = setInterval(updateScreen, 2000);
-    console.log("resume");
 }
