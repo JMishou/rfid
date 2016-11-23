@@ -71,13 +71,7 @@ var RFIDLoadInterval;
 
 var url = 'https://txrxlabs.org/rfid_access.json?%s=%s&api_key=%s';
 var configs;
-  /*
-  }
-  type: "door_id",
-  id: "1",
-  api: "hJVhmzCjYbXDV9Y6rjCRRrzWfERcyF"
-  };
-  */
+
 var serdata = [];
 
 oledHandler.on('message', function(response) {
@@ -126,7 +120,7 @@ function configsLoaded(data){
       logData("Configs Loaded");
       logData(sprintf("Current State: %s",configs["accessMode"]));
       loadRFIDServer();
-      RFIDLoadInterval = setInterval(loadRFIDServer, 300000);
+      RFIDLoadInterval = setInterval(loadRFIDServer, 1000 * 60 * 5);
     }
 }
 
@@ -234,7 +228,7 @@ function loadRFIDLocal() {
     fs.readFile(WORKING_DIRECTORY + LOCAL_PERMISSION_FILE, function(err, data) {
         if (err) {
             logData('No local RFID File Found contacting server: ' + err.toString());
-            RFIDLoadInterval = setInterval(loadRFIDServer, 30000);
+            //RFIDLoadInterval = setInterval(loadRFIDServer, 30000);
             return;
         }
         RFIDData = JSON.parse(data);
@@ -261,7 +255,7 @@ function loadRFIDServer() {
                 logData("Recieved RFID Data from Server.");
                 saveRFIDState();
                 dataState = 1;
-                clearInterval(RFIDLoadInterval);
+                //clearInterval(RFIDLoadInterval);
             }
             else{
                 logData("Invalid JSON data: " + body);
@@ -339,7 +333,6 @@ function isHoliday(accessGroup){
 
 	    accessGroup.forEach(function(group){
 		var index = Object.keys(holidays).indexOf(now)
-		console.log("Index : " + index);
 			if (index!=-1) {
 			    if (holidays[now][0] != group) {
 			        holidayVerified = true;
@@ -388,7 +381,7 @@ function checkAccessState(accessGroup){  //returns true if accessMode is in a us
 
 //Triggers the user action based on proper permissions
 function userAction(userID){
- 
+  
   var accessGroup = lookupaccessGroup(userID);
   var holiday = isHoliday(accessGroup);
   var schedule = verifySchedule(accessGroup);
@@ -414,7 +407,7 @@ function userAction(userID){
             ]);
   }
   else if (schedule && !holiday && accessState[0]){
-	    logData("Access Granted");
+	    logData(sprintf("Access Granted - Access Group: %s - User ID: %s", accessGroupString(accessGroup),userID));
       	    accessGranted();
   }
   else{
@@ -432,6 +425,7 @@ function userAction(userID){
 function accessGroupString(accessGroup){
 	var str = "";
 	accessGroup.forEach(function(group){
+	console.log(group);
 		switch (parseInt(group)) {
 
 		        case 0:
@@ -457,6 +451,10 @@ function accessGroupString(accessGroup){
 				break;
 			case 40:
 				str += "Studio Resident";
+				break;
+			case 99999:
+				str += "Staff";
+				break;
 		}
 		if (str != ""){
 			str += ", "
@@ -469,7 +467,7 @@ function accessGroupString(accessGroup){
 //log user and date/time for each attempt with result
 function logData(message){
     console.log(message); 
-    fs.appendFile(WORKING_DIRECTORY + LOCAL_LOG_FILE, Date.now().toString + '\t' + message + '\n',function(err, data) {
+    fs.appendFile(WORKING_DIRECTORY + LOCAL_LOG_FILE, Date.now().toString() + '\t' + message + '\n',function(err, data) {
       if (err) { 
             console.log('Unable to write to ' + fileName + ": " + err.toString());
             return;
