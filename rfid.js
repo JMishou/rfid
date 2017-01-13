@@ -1,28 +1,16 @@
 var http = require("http");
 var https = require("https");
 var os = require("os");
-var querystring = require("querystring");
 var hostname = os.hostname();
 var Gpio = require('pigpio').Gpio;
 var fs = require('fs');
 var SerialPort = require("serialport");
 var sprintf = require("sprintf-js").sprintf;
 var async = require("async");
-var mqtt = require('mqtt')
+var mqtt = require('mqtt');
 var fork = require('child_process').fork;
+const spawn = require('child_process').spawn;
 
-
-
-
-
-/*
-var i2c = require('i2c-bus');
-var i2cBus = i2c.open(1, function (err) {  if (err) throw err; });
-var oled = require('oled-i2c-bus');
-
-//var oled = require('oled-js-pi');
-var font = require('oled-font-5x7');
-*/
 
 //Global variables
 
@@ -37,7 +25,8 @@ const NORMAL_FMSG = "Normal Mode User Schedule Invalid";
 const DATA_STATE_UNLOADED = 0;
 const DATA_STATE_LOADED = 1;
 const CONFIG_FILE = "/config.json";
-const LOCAL_PERMISSION_FILE = "/accessRFID.json";
+const WIFI_STATUS_FILE = "/WiFi_status.json";
+const LOCAL_PERMISSION_FILE = "/permissions.json";
 const LOCAL_LOG_FILE = "/log.log";
 const WORKING_DIRECTORY = "/home/pi/rfid";
 
@@ -51,6 +40,9 @@ var dataState = 0;
 
 var buzzer =  null;
 var relay  =  null;
+var wifiReconnectAttempts = 0;
+var wifiStatus = 0;
+
 
 var RFIDData;
 var oledCnt = 0;
@@ -61,6 +53,7 @@ var oledBusy = 0;
 var userID;
 var accessGroup;
 
+
 var serialport = new SerialPort('/dev/serial0', {
   parser: SerialPort.parsers.byteDelimiter([03])
 });
@@ -68,6 +61,7 @@ var serialport = new SerialPort('/dev/serial0', {
 
 var lastRFIDTime = 0;
 var RFIDLoadInterval;
+var wifiCheckInterval;
 
 var url = 'https://txrxlabs.org/rfid_access.json?%s=%s&api_key=%s';
 var configs;
@@ -86,29 +80,28 @@ loadConfig(configsLoaded); //load configurations and then run configsLoaded()
 setupGPIO();  //setup the GPIO pins
 updateScreen();
 var oledInterval = setInterval(updateScreen, 2000);
+var wifiCheckInterval = setInterval(checkWifiStatus,5000);
 
 
 serialport.on('open', function() { // open serial port
     logData('Serial Port Opened');
     serialport.on('data', function(data) { // on get data
+	if (RFIDData != undefined){
+		Array.prototype.push.apply(serdata, data); // push the serial data to an array
+	    	if (serdata.slice(serdata.indexOf(0x02), serdata.length).length >= 14) { // if the array is now 14 characters long
+			    userID = rfidValue(serdata);
+		    serialport.flush(function(err,results){});
+		    	serdata = [];
 
-        Array.prototype.push.apply(serdata, data); // push the serial data to an array
-
-    if (serdata.slice(serdata.indexOf(0x02), serdata.length).length >= 14) { // if the array is now 14 characters long
-		    userID = rfidValue(serdata);
-            serialport.flush(function(err,results){});
-	    	serdata = [];
-
-		    var currRFIDTime = (new Date).getTime();
-		    if ((currRFIDTime - lastRFIDTime) < 2000){
-			      lastRFIDTime = currRFIDTime;
-			      return;
-		    }
-		    lastRFIDTime = currRFIDTime;
-
-		    userAction(userID);
-        	
-        }
+			    var currRFIDTime = (new Date).getTime();
+			    if ((currRFIDTime - lastRFIDTime) < 2000){
+				      lastRFIDTime = currRFIDTime;
+				      return;
+			    }
+			    lastRFIDTime = currRFIDTime;
+			    userAction(userID);
+		}
+	}
     });
 });
 
@@ -121,6 +114,7 @@ function configsLoaded(data){
       logData(sprintf("Current State: %s",configs["accessMode"]));
       loadRFIDServer();
       RFIDLoadInterval = setInterval(loadRFIDServer, 1000 * 60 * 5);
+      wifiCheckInterval = setInterval(checkWifiStatus,5000);
     }
 }
 
@@ -136,7 +130,7 @@ function readJSON(fileName, callback){
 	            logData('Read file error ' + fileName + " : " + err1.toString());
 	            callback(null);
 	        }
-	        logData("Data Loaded from File: " + fileName);
+	        //logData("Data Loaded from File: " + fileName);
 	        callback(JSON.parse(data));
 	        });
 	    }
@@ -146,13 +140,13 @@ function readJSON(fileName, callback){
   });
 }
 
-function writeJSON(fileName, data, callback){
+function writeJSON(fileName, data){
     fs.writeFile(fileName, JSON.stringify(data),function(err, data) {
       if (err) {
             logData('Unable to write to ' + fileName + ": " + err.toString());
-            return;
+            //return;
       }
-    logData("Data written to File: " + fileName);
+    //logData("Data written to File: " + fileName);
     });
 }
 
@@ -165,14 +159,13 @@ function rfidValue(rawRFID) {
 
     async.eachSeries(rfid,function(value, callback) {
         rfidstring = rfidstring.concat(String.fromCharCode(value));
-        
+
 	callback();
     }, function(err) {
 	    if( err ) {
 	      console.log(err);
-	    } 
+	    }
     	});
-
 
     var i = 0;
     async.whilst(
@@ -196,6 +189,7 @@ function rfidValue(rawRFID) {
     }
     else{
         logData("Invalid Checksum: " + chxm + " for ID: " + cardID);
+	return -1
     }
 }
 
@@ -255,7 +249,6 @@ function loadRFIDServer() {
                 logData("Recieved RFID Data from Server.");
                 saveRFIDState();
                 dataState = 1;
-                //clearInterval(RFIDLoadInterval);
             }
             else{
                 logData("Invalid JSON data: " + body);
@@ -271,18 +264,19 @@ function loadRFIDServer() {
 
 //Looks up a user group level based on the userID
 function lookupaccessGroup(userID) {
-    var ag = null;
+
+	var ag = null;
 	async.reduce(Object.keys(RFIDData["rfids"]),[] ,function(memo, item, callback) {
 		var ret = memo;
-		
+
 		if (RFIDData["rfids"][item].indexOf(userID) != -1) {
-                	ret.push(item);
-            	}
+			ret.push(item);
+	    	}
 
 		callback(null, ret);
 
 		}, function(err, result) {
-				// if any of the file processing produced an error, err would equal that error
+				// if any of the file processing produced an error, err would equal that errorconfigsLoaded
 				if( err ) {
 					// One of the iterations produced an error.
 					// All processing will now stop.
@@ -291,8 +285,9 @@ function lookupaccessGroup(userID) {
 				    ag = result;
 			}
 	});
-    if (ag.length == 0) ag.push(-1);
-    return ag;
+	if (ag.length == 0) ag.push(-1);
+	return ag;
+
 }
 
 function isJSONString(str) {
@@ -318,7 +313,7 @@ function verifySchedule(accessGroup) {
 		});
 	}
     });
-    
+
     return scheduleVerified;
 }
 
@@ -326,10 +321,10 @@ function verifySchedule(accessGroup) {
 // returns true if it is a holiday and the user group is excluded
 function isHoliday(accessGroup){
     var now = new Date().toJSON();
-    var holidays = RFIDData["holidays"];
+    var holidays = RFIDData["holidays"];configsLoaded
     holidayVerified = false;
     now = now.slice(0,10);
-    if (typeof holidays != 'undefined') {    
+    if (typeof holidays != 'undefined') {
 
 	    accessGroup.forEach(function(group){
 		var index = Object.keys(holidays).indexOf(now)
@@ -337,98 +332,119 @@ function isHoliday(accessGroup){
 			    if (holidays[now][0] != group) {
 			        holidayVerified = true;
 			    }
-			}		
+			}
 	    });
     }
     return holidayVerified;
-}
-
-function checkAccessState(accessGroup){  //returns true if accessMode is in a useable state
-// accessMode: 0 normal operation , 1 open any, 2 admin only, 3 lock open, 4 lock out, 5 out of service
-
-    var useable = 0;
-    var reason = "";
-
-    switch (parseInt(configs['accessMode'])) {
-
-                case 0:
-                case 1:
-                case 3:
-                         useable = 1;
-                         break;
-                case 2:
-                         if (accessGroup.indexOf(ADMIN_GROUP) != -1){
-                             useable = 1;
-                         }
-                         else{
-                             reason = " ADMIN ONLY";
-                         }
-
-                         break;
-                case 4:
-                         reason = " LOCKED OUT";
-                         break;
-                case 5:
-                         reason = " OUT OF SERVICE";
-                         break;
-                default:
-                         break;
-            }
-
-    return [useable,reason];
-
-}
-
-//Triggers the user action based on proper permissions
-function userAction(userID){
-  
-  var accessGroup = lookupaccessGroup(userID);
-  var holiday = isHoliday(accessGroup);
-  var schedule = verifySchedule(accessGroup);
-  var accessState = checkAccessState(accessGroup);
-  var denyString = "Access Denied -";
-  if (parseInt(configs['accessMode']) == 3){
-	logData(sprintf("Access Granted - %s - Access Group: %s - User ID: %s", "Mode: Open Any",accessGroupString(accessGroup),userID));
-	if (accessGroup == -1){
-	oledWarning([
-		    ['Badge not in system', 2000],
-		    ['register at kiosk' , 2000]
-		    ]);
 	}
-	accessGranted();
-  }
-  else if (accessGroup == -1){
-	logData(sprintf("Badge not in system - Badge Number: %s",userID));
-	accessDenied();
-        oledWarning([
-	    ['Access Denied', 2000],
-            ['Badge not in system', 2000],
-            ['register at kiosk' , 2000]
-            ]);
-  }
-  else if (schedule && !holiday && accessState[0]){
-	    logData(sprintf("Access Granted - Access Group: %s - User ID: %s", accessGroupString(accessGroup),userID));
-      	    accessGranted();
-  }
-  else{
-      if(!accessState[0]) denyString += accessState[1];
-      else if(holiday) denyString += "CLOSED FOR HOLIDAY"
-      else if(!schedule) denyString += sprintf(" %s : OUTSIDE OF SCHEDULE",accessGroupString(accessGroup));
+
+	function checkAccessState(accessGroup){  //returns true if accessMode is in a useable state
+	// accessMode: 0 normal operation , 1 open any, 2 admin only, 3 lock open, 4 lock out, 5 out of service
+
+	    var useable = 0;
+	    var reason = "";
+
+	    switch (parseInt(configs['accessMode'])) {
+
+	                case 0:
+	                case 1:
+	                case 3:
+	                         useable = 1;
+	                         break;
+	                case 2:
+	                         if (accessGroup.indexOf(ADMIN_GROUP) != -1){
+	                             useable = 1;
+	                         }
+	                         else{
+	                             reason = " ADMIN ONLY";
+	                         }
+
+	                         break;
+	                case 4:
+	                         reason = " LOCKED OUT";
+	                         break;
+	                case 5:
+	                         reason = " OUT OF SERVICE";
+	                         break;
+	                default:
+	                         break;
+	            }
+
+	    return [useable,reason];
+
+	}
 
 
-      logData(denyString);
+	//Triggers the user action based on proper permissions
+	function userAction(userID){
 
-      accessDenied();
-  }
-}
+	  var accessGroup = lookupaccessGroup(userID);
+	  var holiday = isHoliday(accessGroup);
+	  var schedule = verifySchedule(accessGroup);
+	  var accessState = checkAccessState(accessGroup);
+	  var denyString = "Access Denied -";
+	  if (parseInt(configs['accessMode']) == 3){
+		logData(sprintf("Access Granted - %s - Access Group: %s - User ID: %s", "Mode: Open Any",accessGroupString(accessGroup),userID));
+		if (accessGroup == -1){
+
+		oledWarning([
+			    ['Badge not in system', 2000],
+			    ['register at kiosk' , 2000]
+			    ]);
+
+		}
+
+		accessGranted();
+	  }
+	  else if (accessGroup == -1){
+		logData(sprintf("Badge not in system - Badge Number: %s",userID));
+		accessDenied();
+
+	        oledWarning([
+		    ['Access Denied', 2000],
+	            ['Badge not in system', 2000],
+	            ['register at kiosk' , 2000]
+	            ]);
+
+	  }
+	  else if (schedule && !holiday && accessState[0]){
+		    logData(sprintf("Access Granted - Access Group: %s - User ID: %s", accessGroupString(accessGroup),userID));
+		    oledWarning([
+			    ["Access Granted", 4000]
+			    ]);
+	      	    accessGranted();
+	  }
+	  else{
+		if(!accessState[0]) denyString += accessState[1];
+		else if(holiday){
+			denyString += "CLOSED FOR HOLIDAY"
+			oledWarning([
+			    ["CLOSED FOR HOLIDAY", 4000]
+			    ]);
+
+		}
+		else if(!schedule){
+			denyString += sprintf(" %s : OUTSIDE OF SCHEDULE",accessGroupString(accessGroup));
+			oledWarning([
+			    [sprintf("Access Denied %s",accessGroupString(accessGroup)), 3000],
+			    ['OUTSIDE OF SCHEDULE', 3000]
+			    ]);
+		}
+
+
+		logData(denyString);
+
+		accessDenied();
+	  }
+	}
+
 
 function accessGroupString(accessGroup){
 	var str = "";
 	accessGroup.forEach(function(group){
-	console.log(group);
 		switch (parseInt(group)) {
 
-		        case 0:
+		  case 0:
 				str += "Non-paying Member";
 				break;
 		        case 1:
@@ -459,46 +475,33 @@ function accessGroupString(accessGroup){
 		if (str != ""){
 			str += ", "
 		}
-	});	
+	});
 	str = str.replace(/\, $/, '');
 	return str;
 }
 
 //log user and date/time for each attempt with result
 function logData(message){
-    console.log(message); 
+    console.log(message);
     fs.appendFile(WORKING_DIRECTORY + LOCAL_LOG_FILE, Date.now().toString() + '\t' + message + '\n',function(err, data) {
-      if (err) { 
+      if (err) {
             console.log('Unable to write to ' + fileName + ": " + err.toString());
             return;
       }
     });
 }
-/*
-function loadState(){
-	readJSON(WORKING_DIRECTORY + LOCAL_STATE_FILE, function(data) {
-		machineState = data;
-	});
-}
 
-function saveState(){
-	writeJSON(WORKING_DIRECTORY + LOCAL_STATE_FILE, machineState, function(bool) {
-		if (bool) logData("Data written successfully to file");
-		else logData("Failed to write data to file");
-	});
-}
-*/
 function accessGranted(){
     buzzer.digitalWrite(1);
     relay.digitalWrite(1);
     setTimeout(function() { buzzer.digitalWrite(0); }, 100);
     setTimeout(function() { relay.digitalWrite(0); }, 6000);
-    oledMessage("Access Granted",false);
+    //oledMessage("Access Granted",false);
 }
 
 function accessDenied(){
     buzzer.digitalWrite(1);
-    oledMessage("Access Denied",false);
+    //oledMessage("Access Denied",false);
     async.series([
         function(callback){
             setTimeout(function() { buzzer.digitalWrite(0); }, 100);
@@ -520,13 +523,13 @@ function updateScreen(){
         if (oledCnt) {
             oledHandler.send("Welcome to TX/RX");
             oledCnt = 0;
-        }		
+        }
         else {
             oledHandler.send("Scan Badge Here");
             oledCnt = 1;
         }
     }
-    
+
 }
 
 function oledMessage(msg, priority){
@@ -552,15 +555,34 @@ function oledWarning(warning){ //warning : [ ['message1', time1], ['message2', t
     );
 
     setTimeout(function() { resumeOled(); }, totalTime);
-    
+
 }
 
 function pauseOled(){
+    //console.log("pause oled");
     oledBusy = 1;
-    clearInterval(oledInterval);
+    //clearInterval(oledInterval);
 }
 
 function resumeOled(){
+    //console.log("resume oled");
     oledBusy = 0;
-    oledInterval = setInterval(updateScreen, 2000);
+    //oledInterval = setInterval(updateScreen, 2000);
+}
+
+
+function checkWifiStatus(){
+	readJSON(WORKING_DIRECTORY + WIFI_STATUS_FILE, function(data){
+		if (data.connected != wifiStatus){
+			if (data.connected == 0) logData("System is offline: " + data.reconnectAttempts + "Attempts have been made to reconnect");
+			else logData("System is online");
+			wifiStatus = data.connected;
+		}
+		if (data.restartRequired == 1){
+			data.restartRequired = 0;
+			writeJSON(WORKING_DIRECTORY + WIFI_STATUS_FILE,data);
+			logData("Cannot reconnect to WiFi... Rebooting");
+			oledWarning([["STANDBY.. SYSTEM IS REBOOTING", 60000]]);
+		}
+	});
 }
