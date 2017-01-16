@@ -8,9 +8,10 @@ try {
 	obj.restartRequired = 1;
 	console.log(JSON.stringify(obj));
 	fs.writeFileSync(file, JSON.stringify(obj), 'utf8');
+	console.log("rebooting");
 	setTimeout(function(){
-		console.log("rebooting");
-		exec('shutdown -r now',function(error, stdout, stderr){
+		
+		exec('/sbin/shutdown -r now',function(error, stdout, stderr){
 			console.log(stdout);					
 		});
 	}, 15000);
