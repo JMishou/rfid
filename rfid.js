@@ -5,7 +5,7 @@ var hostname = os.hostname();
 var Gpio = require('pigpio').Gpio;
 var fs = require('fs');
 var SerialPort = require("serialport");
-var sprintf = require("sprintf-js").sprintf;
+//var sprintf = require("sprintf-js").sprintf;
 var async = require("async");
 var mqtt = require('mqtt');
 var fork = require('child_process').fork;
@@ -28,6 +28,7 @@ const CONFIG_FILE = "/config.json";
 const WIFI_STATUS_FILE = "/WiFi_status.json";
 const LOCAL_PERMISSION_FILE = "/permissions.json";
 const LOCAL_LOG_FILE = "/log.log";
+const TEMP_LOG_FILE = "/temp.json";
 const WORKING_DIRECTORY = "/home/pi/rfid";
 
 var oledHandler = fork(WORKING_DIRECTORY + '/oled-handler.js');
@@ -63,7 +64,7 @@ var lastRFIDTime = 0;
 var RFIDLoadInterval;
 var wifiCheckInterval;
 
-var url = 'https://txrxlabs.org/rfid_access.json?%s=%s&api_key=%s';
+var baseUrl = 'https://txrxlabs.org/';
 var configs;
 
 var serdata = [];
@@ -111,7 +112,7 @@ function configsLoaded(data){
     if (data != null){
       configs = data["config"];
       logData("Configs Loaded");
-      logData(sprintf("Current State: %s",configs["accessMode"]));
+      logData(`Current State: ${configs["accessMode"]}`);
       loadRFIDServer();
       RFIDLoadInterval = setInterval(loadRFIDServer, 1000 * 60 * 5);
       wifiCheckInterval = setInterval(checkWifiStatus,5000);
@@ -235,7 +236,7 @@ function loadRFIDLocal() {
 //if successful the data is written locally
 //otherwise loads data from the local file.
 function loadRFIDServer() {
-    var _url = sprintf(url,configs["type"],configs["id"],configs["api"]);
+    var _url = baseUrl + `rfid_access.json?${configs["type"]}=${configs["id"]}&api_key=${configs["api"]}`;
     https.get(_url, function (res) {
         var body = '';
 
@@ -375,21 +376,26 @@ function isHoliday(accessGroup){
 	}
 
 
-	//Triggers the user action based on proper permissions
-	function userAction(userID){
+//Triggers the user action based on proper permissions
+function userAction(userID){
 
 	  var accessGroup = lookupaccessGroup(userID);
 	  var holiday = isHoliday(accessGroup);
 	  var schedule = verifySchedule(accessGroup);
 	  var accessState = checkAccessState(accessGroup);
-	  var denyString = "Access Denied -";
+	  var denyString = "Access Denied - ";
+	  var logDetail = {}
+	  logDetail.accessGroup = accessGroup;
+	  logDetail.isHoliday = holiday;
+	  logDetail.onSchedule = schedule;
+	
 	  if (parseInt(configs['accessMode']) == 3){
-		logData(sprintf("Access Granted - %s - Access Group: %s - User ID: %s", "Mode: Open Any",accessGroupString(accessGroup),userID));
+		logData(`Access Granted - Mode: Open Any - Access Group: ${accessGroupString(accessGroup)} - User ID: ${userID}`);
 		if (accessGroup == -1){
 
 		oledWarning([
-			    ['Badge not in system', 2000],
-			    ['register at kiosk' , 2000]
+			    ['Badge not recognized', 2000],
+			    ['check in at kiosk' , 2000]
 			    ]);
 
 		}
@@ -397,18 +403,19 @@ function isHoliday(accessGroup){
 		accessGranted();
 	  }
 	  else if (accessGroup == -1){
-		logData(sprintf("Badge not in system - Badge Number: %s",userID));
+		logData(`Access Denied - Badge not in system - Badge Number: ${userID}`);
+		denyString += "Badge not in permission table";
 		accessDenied();
 
 	        oledWarning([
 		    ['Access Denied', 2000],
-	            ['Badge not in system', 2000],
-	            ['register at kiosk' , 2000]
+	            ['Badge not recognized', 2000],
+	            ['check in at kiosk' , 2000]
 	            ]);
 
 	  }
 	  else if (schedule && !holiday && accessState[0]){
-		    logData(sprintf("Access Granted - Access Group: %s - User ID: %s", accessGroupString(accessGroup),userID));
+		    logData(`Access Granted - Access Group: ${accessGroupString(accessGroup)} - User ID: ${userID}`);
 		    oledWarning([
 			    ["Access Granted", 4000]
 			    ]);
@@ -424,19 +431,20 @@ function isHoliday(accessGroup){
 
 		}
 		else if(!schedule){
-			denyString += sprintf(" %s : OUTSIDE OF SCHEDULE",accessGroupString(accessGroup));
+			denyString += `${accessGroupString(accessGroup)} : OUTSIDE OF SCHEDULE`;
 			oledWarning([
-			    [sprintf("Access Denied %s",accessGroupString(accessGroup)), 3000],
+			    [`Access Denied ${accessGroupString(accessGroup)}`, 3000],
 			    ['OUTSIDE OF SCHEDULE', 3000]
 			    ]);
 		}
 
 
 		logData(denyString);
-
+		logDetail.denial = denyString;
 		accessDenied();
 	  }
-	}
+	  logToServer(userID,logDetail);
+}
 
 
 function accessGroupString(accessGroup){
@@ -586,4 +594,76 @@ function checkWifiStatus(){
 			oledWarning([["STANDBY.. SYSTEM IS REBOOTING", 60000]]);
 		}
 	});
+}
+
+
+//log data to the website.
+function logToServer(rfid, detail) {
+	var logData = {};
+	logData.logs=[];
+	var jsonData = {};
+	var _file = WORKING_DIRECTORY + TEMP_LOG_FILE;
+
+    async.series([
+        function(callback){
+		//check to see if there is any previously unsent log data.
+		fs.readFile(_file, function (err, data) {
+			//if there is no file cool, no previous log data.
+			if (!err){
+				if (data !== ""){
+					logData = JSON.parse(data);
+				}
+			}
+			callback(null,null);
+		});
+           	
+        },
+        function(callback){
+    		jsonData.type = configs.type;
+		jsonData.id = configs.id;
+		jsonData.DateTime = new Date();
+		jsonData.description = configs.desc;
+		jsonData.accessMode = configs.accessMode;
+		jsonData.rfid = rfid;
+
+		//console.log(jsonData);
+
+		for(var key in detail){
+			if(!jsonData.hasOwnProperty(key)){
+				jsonData[key]=detail[key];
+			}
+		}
+
+		logData.logs.push(jsonData);
+
+            	callback(null,null);
+        },
+        function(callback){
+
+		var logString = escape(JSON.stringify(logData.logs))
+		var _url = `https://txrxlabs.org/api/rfid_log/?api_key=${configs.api}&logs=${logString}`;
+		https.get(_url, function (res) {
+		var body = '';
+
+		res.on('data', function(chunk) {
+		    body += chunk;
+		});
+
+		res.on('end', function() {
+			fs.unlink(_file, function(err){
+				if(!err){
+					console.log(`Successfully deleted ${_file}`);
+				}
+			});
+			callback(null,null);
+		});
+		}).on('error', function(e) {
+			console.log("Error uploading data to log: " + _url, e);
+			fs.writeFile(_file, JSON.stringify(logData));
+			return;
+		});
+
+
+        }
+    ]);
 }
