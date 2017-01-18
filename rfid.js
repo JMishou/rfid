@@ -483,7 +483,8 @@ function accessGroupString(accessGroup){
 //log user and date/time for each attempt with result
 function logData(message){
     console.log(message);
-    fs.appendFile(WORKING_DIRECTORY + LOCAL_LOG_FILE, Date.now().toString() + '\t' + message + '\n',function(err, data) {
+    var d = new Date()
+    fs.appendFile(WORKING_DIRECTORY + LOCAL_LOG_FILE, d.toString() + '\t' + message + '\n',function(err, data) {
       if (err) {
             console.log('Unable to write to ' + fileName + ": " + err.toString());
             return;
