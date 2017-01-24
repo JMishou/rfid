@@ -184,12 +184,12 @@ function rfidValue(rawRFID) {
     );
 
     rfid = rfidstring.join("");
-    cardID = pad(parseInt("0x" + rfid.slice(4,10)),10);
+    cardID = pad(parseInt("0x" + rfid.slice(2,10)),10);
     if (chxm == parseInt("0x" + rfid.slice(10,13))){
         return cardID
     }
     else{
-        logData("Invalid Checksum: " + chxm + " for ID: " + cardID);
+        logData("Invalid Checksum: " + chxm.toString(16).toUpperCase() + " for ID: " + cardID);
 	return -1
     }
 }
