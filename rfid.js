@@ -70,7 +70,7 @@ var configs;
 var serdata = [];
 
 oledHandler.on('message', function(response) {
-  console.log(response);
+  logData(response);
 });
 
 //Main code
@@ -599,8 +599,8 @@ function checkWifiStatus(){
 
 //log data to the website.
 function logToServer(rfid, detail) {
-	var logData = {};
-	logData.logs=[];
+	var dataLog = {};
+	dataLog.logs=[];
 	var jsonData = {};
 	var _file = WORKING_DIRECTORY + TEMP_LOG_FILE;
 
@@ -611,7 +611,12 @@ function logToServer(rfid, detail) {
 			//if there is no file cool, no previous log data.
 			if (!err){
 				if (data !== ""){
-					logData = JSON.parse(data);
+					try {
+						dataLog = JSON.parse(data);
+					}
+					catch (e) {
+						logData(e);
+					}
 				}
 			}
 			callback(null,null);
@@ -634,13 +639,13 @@ function logToServer(rfid, detail) {
 			}
 		}
 
-		logData.logs.push(jsonData);
+		dataLog.logs.push(jsonData);
 
             	callback(null,null);
         },
         function(callback){
 
-		var logString = escape(JSON.stringify(logData.logs))
+		var logString = escape(JSON.stringify(dataLog.logs))
 		var _url = `https://txrxlabs.org/api/rfid_log/?api_key=${configs.api}&logs=${logString}`;
 		https.get(_url, function (res) {
 		var body = '';
@@ -659,7 +664,7 @@ function logToServer(rfid, detail) {
 		});
 		}).on('error', function(e) {
 			console.log("Error uploading data to log: " + _url, e);
-			fs.writeFile(_file, JSON.stringify(logData));
+			fs.writeFile(_file, JSON.stringify(dataLog));
 			return;
 		});
 
