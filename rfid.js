@@ -473,6 +473,9 @@ function accessGroupString(accessGroup){
 			case 30:
 				str += "Table Hacker";
 				break;
+      case 35:
+				str += "Texas Tech";
+				break;
 			case 40:
 				str += "Studio Resident";
 				break;
